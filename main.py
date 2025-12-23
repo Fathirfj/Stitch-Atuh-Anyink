@@ -41,5 +41,6 @@ async def stitch(ctx):
         new_im.save(image_binary, 'PNG')
         image_binary.seek(0)
         await ctx.send(file=discord.File(fp=image_binary, filename='stitched.png'))
-
-bot.run
+import os
+token = os.getenv('DISCORD_TOKEN')
+bot.run(token)
