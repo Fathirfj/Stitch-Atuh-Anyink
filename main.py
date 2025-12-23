@@ -42,5 +42,9 @@ async def stitch(ctx):
         image_binary.seek(0)
         await ctx.send(file=discord.File(fp=image_binary, filename='stitched.png'))
 import os
+
 token = os.getenv('DISCORD_TOKEN')
-bot.run(token)
+if token:
+    bot.run(token)
+else:
+    print("Error: DISCORD_TOKEN tidak ditemukan di Environment Variables")
