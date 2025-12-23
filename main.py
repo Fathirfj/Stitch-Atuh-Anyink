@@ -42,4 +42,4 @@ async def stitch(ctx):
         image_binary.seek(0)
         await ctx.send(file=discord.File(fp=image_binary, filename='stitched.png'))
 
-bot.run(MTQ1Mjg5NjUxOTA2MDU4NjU0Ng.GTyu7e.8hyIiVAhEBX6wNMM9aCKts0gwaYVlIxSDSN-yM)
+bot.run
