@@ -2,4 +2,3 @@ py-cord
 Pillow
 requests
 Flask
-audioop-lpm
