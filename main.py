@@ -1,85 +1,106 @@
 import discord
-from discord.ext import commands
+from discord import option
 from PIL import Image
 import io
 import requests
 import os
+import zipfile
 from flask import Flask
 from threading import Thread
 
-# --- BAGIAN KEEP ALIVE (Agar Railway Tidak Mati) ---
+# --- KEEP ALIVE SERVER ---
 app = Flask('')
-
 @app.route('/')
-def home():
-    return "Bot is alive!"
+def home(): return "Bot Vertical Stitch Online!"
 
 def run_web():
-    # Mengambil port dari environment variable Railway (default 8080)
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
-def keep_alive():
-    t = Thread(target=run_web)
-    t.start()
+# --- BOT SETUP (Slash Commands) ---
+bot = discord.Bot()
 
-# --- BAGIAN BOT DISCORD ---
-intents = discord.Intents.default()
-intents.message_content = True # Pastikan Message Content Intent aktif di Dev Portal
-bot = commands.Bot(command_prefix="!", intents=intents)
+def process_stitching(image_objects):
+    """Logika Gabung Vertikal"""
+    if not image_objects:
+        return None
+    
+    # Samakan lebar ke gambar pertama agar rapi
+    base_width = image_objects[0].size[0]
+    resized_images = []
+    for img in image_objects:
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        # Resize proporsional berdasarkan lebar
+        w_percent = (base_width / float(img.size[0]))
+        h_size = int((float(img.size[1]) * float(w_percent)))
+        resized_images.append(img.resize((base_width, h_size), Image.Resampling.LANCZOS))
+
+    # Hitung total tinggi
+    total_height = sum(img.size[1] for img in resized_images)
+    
+    # Buat kanvas vertikal
+    new_im = Image.new('RGB', (base_width, total_height))
+    y_offset = 0
+    for im in resized_images:
+        new_im.paste(im, (0, y_offset))
+        y_offset += im.size[1]
+    
+    return new_im
 
 @bot.event
 async def on_ready():
-    print(f'Bot berhasil login sebagai {bot.user}')
+    print(f"{bot.user} is ready and online!")
 
-@bot.command()
-async def stitch(ctx):
-    """Menggabungkan minimal 2 gambar secara horizontal"""
-    if len(ctx.message.attachments) < 2:
-        await ctx.send("Kirimkan minimal 2 gambar sekaligus dengan perintah !stitch")
-        return
+# --- SLASH COMMAND: STITCH DARI ATTACHMENT ---
+@bot.slash_command(description="Gabungkan gambar secara vertikal")
+@option("image1", discord.Attachment, description="Gambar pertama")
+@option("image2", discord.Attachment, description="Gambar kedua")
+@option("image3", discord.Attachment, description="Gambar ketiga (opsional)", required=False)
+async def stitch(ctx, image1: discord.Attachment, image2: discord.Attachment, image3: discord.Attachment = None):
+    await ctx.defer() # Memberi waktu bot memproses
+    
+    attachments = [image1, image2]
+    if image3: attachments.append(image3)
+    
+    imgs = []
+    for att in attachments:
+        resp = requests.get(att.url)
+        imgs.append(Image.open(io.BytesIO(resp.content)))
+    
+    result = process_stitching(imgs)
+    
+    with io.BytesIO() as img_bin:
+        result.save(img_bin, 'PNG')
+        img_bin.seek(0)
+        await ctx.respond(file=discord.File(fp=img_bin, filename='vertical_stitched.png'))
 
-    await ctx.send("Sedang memproses gambar...")
+# --- SLASH COMMAND: STITCH DARI ZIP (Google Drive/Local) ---
+@bot.slash_command(description="Stitch semua gambar di dalam file .ZIP")
+@option("zip_file", discord.Attachment, description="Unggah file ZIP berisi gambar")
+async def stitch_zip(ctx, zip_file: discord.Attachment):
+    if not zip_file.filename.endswith('.zip'):
+        return await ctx.respond("Mohon unggah file format .ZIP!")
 
-    images = []
-    try:
-        for attachment in ctx.message.attachments:
-            # Unduh gambar
-            response = requests.get(attachment.url)
-            img = Image.open(io.BytesIO(response.content))
-            # Pastikan gambar dalam mode RGB (untuk menghindari error PNG transparan)
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
-            images.append(img)
+    await ctx.defer()
+    resp = requests.get(zip_file.url)
+    
+    imgs = []
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
+        for file_name in sorted(archive.namelist()):
+            if file_name.lower().endswith(('.png', '.jpg', '.jpeg')):
+                with archive.open(file_name) as file:
+                    imgs.append(Image.open(io.BytesIO(file.read())))
 
-        # Logika penggabungan horizontal
-        widths, heights = zip(*(i.size for i in images))
-        total_width = sum(widths)
-        max_height = max(heights)
+    if len(imgs) < 2:
+        return await ctx.respond("Isi ZIP minimal harus ada 2 gambar!")
 
-        # Buat kanvas kosong baru
-        new_im = Image.new('RGB', (total_width, max_height))
+    result = process_stitching(imgs)
+    with io.BytesIO() as img_bin:
+        result.save(img_bin, 'PNG')
+        img_bin.seek(0)
+        await ctx.respond(file=discord.File(fp=img_bin, filename='zip_stitched.png'))
 
-        x_offset = 0
-        for im in images:
-            new_im.paste(im, (x_offset, 0))
-            x_offset += im.size[0]
-
-        # Simpan hasil ke buffer memori
-        with io.BytesIO() as image_binary:
-            new_im.save(image_binary, 'PNG')
-            image_binary.seek(0)
-            await ctx.send(file=discord.File(fp=image_binary, filename='stitched.png'))
-
-    except Exception as e:
-        await ctx.send(f"Terjadi kesalahan saat mengolah gambar: {e}")
-
-# Jalankan server web sebelum bot dimulai
-keep_alive()
-
-# Jalankan bot dengan Token dari Environment Variable Railway
-token = os.getenv('DISCORD_TOKEN')
-if token:
-    bot.run(token)
-else:
-    print("Error: Variabel DISCORD_TOKEN belum diatur di Railway!")
+# Jalankan
+Thread(target=run_web).start()
+bot.run(os.getenv('DISCORD_TOKEN'))
