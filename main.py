@@ -8,7 +8,7 @@ from threading import Thread
 # --- KEEP ALIVE ---
 app = Flask('')
 @app.route('/')
-def home(): return "Bot SmartStitch V5 (Auto-ZIP Output) Online!"
+def home(): return "Bot SmartStitch V6 (1-Link Optimized) Online!"
 def run_web():
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
 
@@ -16,6 +16,7 @@ def run_web():
 bot = discord.Bot()
 
 def bypass_drive_link(url):
+    """Konversi link Google Drive ke Direct Link"""
     drive_match = re.search(r'drive\.google\.com/file/d/([a-zA-Z0-9_-]+)', url)
     if drive_match:
         file_id = drive_match.group(1)
@@ -23,6 +24,7 @@ def bypass_drive_link(url):
     return url
 
 def find_smart_split(img, start_y, max_height):
+    """Mencari celah kosong untuk pemotongan cerdas"""
     target_y = start_y + max_height
     if target_y >= img.height: return img.height
     search_range = 150 
@@ -69,7 +71,6 @@ def process_smart_stitch(image_objects, target_width=None, split_height=None, fm
         output_pages.append(full_strip)
     return output_pages
 
-# --- FUNGSI BARU: MEMBUAT ZIP DARI HASIL POTONGAN ---
 def create_zip_result(pages, fmt_name, ext_name):
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
@@ -83,20 +84,55 @@ def create_zip_result(pages, fmt_name, ext_name):
 
 @bot.event
 async def on_ready():
-    print(f"Bot {bot.user} Online dengan fitur Auto-ZIP!")
+    print(f"Bot {bot.user} Siap! Menggunakan 1-Link mode.")
 
-# --- SLASH COMMAND ZIP ---
-@bot.slash_command(description="Stitch dari ZIP dan hasilkan ZIP kembali")
-@option("zip_file", discord.Attachment, description="File ZIP manga")
+# --- REVISI: COMMAND LINK HANYA 1 LINK ---
+@bot.slash_command(description="SmartStitch dari 1 link (Direct/Drive)")
+@option("url", str, description="Link Gambar atau ZIP publik")
 @option("width", int, description="Lebar target", default=720)
-@option("split_at", int, description="Tinggi per halaman", default=2000)
+@option("split_at", int, description="Tinggi per halaman (0 untuk tanpa potong)", default=2000)
+@option("format", choices=["JPG", "WEBP", "PNG"], default="JPG")
+async def smart_stitch_link(ctx, url: str, width: int, split_at: int, format: str):
+    await ctx.defer()
+    try:
+        final_url = bypass_drive_link(url)
+        resp = requests.get(final_url, timeout=20)
+        content_type = resp.headers.get('Content-Type', '').lower()
+        
+        imgs = []
+        # Cek apakah link tersebut adalah ZIP atau Gambar
+        if 'zip' in content_type or url.lower().endswith('.zip'):
+            with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
+                for name in sorted(archive.namelist()):
+                    if name.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                        with archive.open(name) as f:
+                            imgs.append(Image.open(io.BytesIO(f.read())))
+        else:
+            imgs.append(Image.open(io.BytesIO(resp.content)))
+
+        if not imgs:
+            return await ctx.respond("Tidak ditemukan gambar valid di link tersebut.")
+
+        ext = "JPEG" if format == "JPG" else format
+        results = process_smart_stitch(imgs, target_width=width, split_height=split_at if split_at > 0 else None, fmt=ext)
+        
+        zip_output = create_zip_result(results, ext, format.lower())
+        await ctx.respond(
+            f"Selesai! Berhasil memproses link menjadi {len(results)} halaman.",
+            file=discord.File(fp=zip_output, filename="result_from_link.zip")
+        )
+    except Exception as e:
+        await ctx.respond(f"Gagal memproses link. Pastikan link publik dan valid. Error: {e}")
+
+# --- COMMAND ZIP (Tetap Ada untuk Upload Langsung) ---
+@bot.slash_command(description="SmartStitch dari file ZIP yang diupload")
+@option("zip_file", discord.Attachment, description="File ZIP")
+@option("width", int, default=720)
+@option("split_at", int, default=2000)
 @option("format", choices=["JPG", "WEBP", "PNG"], default="JPG")
 async def smart_stitch_zip(ctx, zip_file: discord.Attachment, width: int, split_at: int, format: str):
     await ctx.defer()
     try:
-        if not zip_file.filename.endswith('.zip'):
-            return await ctx.respond("Kirim file .ZIP!")
-
         resp = requests.get(zip_file.url)
         imgs = []
         with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
@@ -107,38 +143,8 @@ async def smart_stitch_zip(ctx, zip_file: discord.Attachment, width: int, split_
 
         ext = "JPEG" if format == "JPG" else format
         results = process_smart_stitch(imgs, target_width=width, split_height=split_at, fmt=ext)
-        
-        # Buat ZIP dari hasil
         zip_output = create_zip_result(results, ext, format.lower())
-        
-        await ctx.respond(
-            f"Selesai! {len(results)} halaman telah digabung dan dibungkus dalam ZIP.",
-            file=discord.File(fp=zip_output, filename="stitched_manga.zip")
-        )
-    except Exception as e:
-        await ctx.respond(f"Error: {e}")
-
-# --- SLASH COMMAND LINK ---
-@bot.slash_command(description="Stitch dari Link dan hasilkan ZIP")
-@option("link1", str, description="Link 1")
-@option("link2", str, description="Link 2")
-@option("width", int, default=720)
-@option("split_at", int, default=0)
-@option("format", choices=["JPG", "WEBP", "PNG"], default="JPG")
-async def smart_stitch_link(ctx, link1: str, link2: str, width: int, split_at: int, format: str):
-    await ctx.defer()
-    try:
-        links = [bypass_drive_link(link1), bypass_drive_link(link2)]
-        imgs = [Image.open(io.BytesIO(requests.get(u).content)) for u in links]
-        
-        ext = "JPEG" if format == "JPG" else format
-        results = process_smart_stitch(imgs, target_width=width, split_height=split_at, fmt=ext)
-        
-        zip_output = create_zip_result(results, ext, format.lower())
-        await ctx.respond(
-            f"Selesai! Hasil gabungan link dikirim dalam bentuk ZIP.",
-            file=discord.File(fp=zip_output, filename="link_result.zip")
-        )
+        await ctx.respond(f"Selesai! {len(results)} halaman dikirim dalam ZIP.", file=discord.File(fp=zip_output, filename="stitched_manga.zip"))
     except Exception as e:
         await ctx.respond(f"Error: {e}")
 
